@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import html
+import json
 import time
 from datetime import timedelta
 from zoneinfo import ZoneInfo
@@ -13,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, InlineKeyboardButton as B, InlineKeyboardMarkup,
                            KeyboardButton, Message, ReplyKeyboardMarkup)
 
-from . import config, db, logic
+from . import config, db, llm, logic
 
 router = Router()
 esc = html.escape
@@ -22,16 +23,18 @@ esc = html.escape
 BTN_WAKE, BTN_PLAN, BTN_ENERGY, BTN_FOCUS = "☀️ Прокинувся", "📋 План", "⚡ Енергія", "🎯 Фокус"
 BTN_HABITS, BTN_MEAL, BTN_TASKS = "💧 Звички", "🍽 Їжа", "📝 Задачі"
 BTN_EVENING, BTN_STATS = "🌙 Вечір", "📊 Статистика"
+BTN_CHAT = "💬 Чат"
 
 MENU = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text=BTN_WAKE), KeyboardButton(text=BTN_PLAN), KeyboardButton(text=BTN_ENERGY)],
         [KeyboardButton(text=BTN_FOCUS), KeyboardButton(text=BTN_HABITS), KeyboardButton(text=BTN_MEAL)],
         [KeyboardButton(text=BTN_TASKS), KeyboardButton(text=BTN_EVENING), KeyboardButton(text=BTN_STATS)],
+        [KeyboardButton(text=BTN_CHAT)],
     ],
     resize_keyboard=True,
 )
-MENU_TEXTS = {BTN_WAKE, BTN_PLAN, BTN_ENERGY, BTN_FOCUS, BTN_HABITS, BTN_MEAL, BTN_TASKS, BTN_EVENING, BTN_STATS}
+MENU_TEXTS = {BTN_WAKE, BTN_PLAN, BTN_ENERGY, BTN_FOCUS, BTN_HABITS, BTN_MEAL, BTN_TASKS, BTN_EVENING, BTN_STATS, BTN_CHAT}
 
 HELP = (
     "Я — твоя операційна система дня. Майже все робиться кнопками внизу.\n\n"
@@ -42,10 +45,11 @@ HELP = (
     "/task текст — додати задачу, /top текст — головна\n"
     "/review — вечірній огляд\n"
     "/stats — статистика за тиждень\n"
+    "/chat — розмова з ШІ (Gemini), /ask питання — разове запитання, /endchat — вийти\n"
     "/tz Europe/Kyiv — часова зона\n"
     "/reviewtime 21:30 — час вечірнього огляду\n"
     "/quiet on|off — тихий режим (без нагадувань про енергію й їжу)\n\n"
-    "Будь-який текст без команди стане задачею."
+    "Будь-який текст без команди стане задачею (поза режимом чату)."
 )
 
 
@@ -574,6 +578,90 @@ async def set_review_time(m: Message, command: CommandObject):
     Ctx(m.from_user.id)
     db.set_user(m.from_user.id, review_time=t)
     await m.answer(f"Вечірній огляд о {t}")
+
+
+# ---------------- чат із Gemini ----------------
+CHAT_KB = InlineKeyboardMarkup(inline_keyboard=[[B(text="🚪 Вийти з чату", callback_data="chat:end")]])
+
+
+def day_context(c: Ctx) -> str:
+    lines = [f"Локальний час: {c.now:%Y-%m-%d %H:%M}"]
+    w = wake_event(c)
+    lines.append(f"Прокинувся о {logic.hm(logic.local(w['ts'], c.tz))}" if w else "Пробудження ще не відмічено")
+    en = db.last_event(c.uid, "energy", c.day)
+    if en:
+        lines.append(f"Остання енергія: {logic.ENERGY[en['value']][1]} о {logic.hm(logic.local(en['ts'], c.tz))}")
+    lm = db.last_event(c.uid, "meal", c.day)
+    lines.append(f"Остання їжа: {logic.hm(logic.local(lm['ts'], c.tz))}" if lm else "Сьогодні їжу ще не відмічено")
+    lines.append("Звички: " + logic.habit_line(*habit_numbers(c)))
+    tasks_ = db.open_tasks(c.uid, c.day)[:7]
+    if tasks_:
+        lines.append("Відкриті задачі: " + "; ".join(("[головна] " if t["top"] else "") + t["text"] for t in tasks_))
+    start_ts, end_ts = logic.day_bounds(c.day, c.tz)
+    f = [x for x in db.focus_between(c.uid, start_ts, end_ts) if x["status"] == "finished"]
+    if f:
+        lines.append(f"Фокус-сесій сьогодні: {len(f)} ({sum(x['minutes'] for x in f)} хв)")
+    return "\n".join(lines)
+
+
+async def chat_reply(m: Message, text: str):
+    c = Ctx(m.from_user.id)
+    st = db.chat_get(c.uid)
+    used = st["used"] if st["day"] == c.day else 0
+    if used >= config.CHAT_DAILY_LIMIT:
+        return await m.answer(f"Ліміт чату на сьогодні вичерпано ({config.CHAT_DAILY_LIMIT} повідомлень). Завтра знову.")
+    history = json.loads(st["history"]) if st["history"] else []
+    await m.bot.send_chat_action(m.chat.id, "typing")
+    try:
+        answer = await llm.ask(history, text, day_context(c))
+    except llm.LLMError as e:
+        return await m.answer(str(e))
+    history += [{"role": "user", "text": text}, {"role": "model", "text": answer}]
+    db.chat_set(c.uid, history=json.dumps(history[-12:], ensure_ascii=False), day=c.day, used=used + 1)
+    await m.answer(answer, reply_markup=CHAT_KB if st["active"] else None)
+
+
+@router.message(Command("chat"))
+@router.message(F.text == BTN_CHAT)
+async def chat_start(m: Message):
+    c = Ctx(m.from_user.id)
+    db.chat_set(c.uid, active=1, history="[]")
+    await m.answer(
+        "💬 Режим чату увімкнено — пиши вільним текстом, я знаю твій день (план, енергію, задачі).\n"
+        "Кнопки меню працюють як завжди.\n\n"
+        "⚠️ Повідомлення й короткий контекст дня надсилаються в Google Gemini (безкоштовний тариф "
+        "може використовувати їх для покращення моделей). Не пиши паролі й чутливі дані.",
+        reply_markup=CHAT_KB)
+
+
+@router.message(Command("ask"))
+async def ask_cmd(m: Message, command: CommandObject):
+    text = (command.args or "").strip()
+    if not text:
+        return await m.answer("Напиши питання після команди: /ask Що мені зробити першим сьогодні?")
+    await chat_reply(m, text)
+
+
+@router.message(Command("endchat"))
+async def chat_end_cmd(m: Message):
+    db.chat_set(m.from_user.id, active=0, history="[]")
+    await m.answer("Чат вимкнено. Текст без команди знову стане задачею.")
+
+
+@router.callback_query(F.data == "chat:end")
+async def chat_end_cb(cb: CallbackQuery):
+    db.chat_set(cb.from_user.id, active=0, history="[]")
+    await cb.message.answer("Чат вимкнено. Текст без команди знову стане задачею.")
+    await cb.answer()
+
+
+def chat_active(m: Message) -> bool:
+    return bool(db.chat_get(m.from_user.id)["active"])
+
+
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"), ~F.text.in_(MENU_TEXTS), chat_active)
+async def chat_text(m: Message):
+    await chat_reply(m, m.text.strip())
 
 
 # ---------------- вільний текст = задача (має бути останнім) ----------------

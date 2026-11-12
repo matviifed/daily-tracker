@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS sent(
   key TEXT NOT NULL,
   PRIMARY KEY(user_id, key)
 );
+CREATE TABLE IF NOT EXISTS chat(
+  user_id INTEGER PRIMARY KEY,
+  active INTEGER NOT NULL DEFAULT 0,
+  history TEXT NOT NULL DEFAULT '[]',
+  day TEXT NOT NULL DEFAULT '',
+  used INTEGER NOT NULL DEFAULT 0
+);
 """
 
 _conn: sqlite3.Connection | None = None
@@ -204,3 +211,15 @@ def was_sent(uid, key) -> bool:
 
 def mark_sent(uid, key):
     run("INSERT OR IGNORE INTO sent(user_id,key) VALUES(?,?)", (uid, key))
+
+
+# ---------- chat ----------
+def chat_get(uid):
+    run("INSERT OR IGNORE INTO chat(user_id) VALUES(?)", (uid,))
+    return one("SELECT * FROM chat WHERE user_id=?", (uid,))
+
+
+def chat_set(uid, **kw):
+    chat_get(uid)
+    cols = ",".join(f"{k}=?" for k in kw)
+    run(f"UPDATE chat SET {cols} WHERE user_id=?", (*kw.values(), uid))

@@ -19,3 +19,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 DEFAULT_TZ = os.getenv("DEFAULT_TZ", "Europe/Kyiv")
 DB_PATH = os.getenv("DB_PATH", "data/tracker.db")
 ALLOWED_USERS = {int(x) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()}
+
+# Чат (Google Gemini, безкоштовний тариф). Без ключа кнопка «Чат» повідомляє, що чат не налаштовано.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+CHAT_DAILY_LIMIT = int(os.getenv("CHAT_DAILY_LIMIT", "30"))
