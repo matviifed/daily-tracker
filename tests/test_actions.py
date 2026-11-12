@@ -5,6 +5,12 @@ import pytest
 from bot import actions, db, handlers, llm, logic
 
 
+def _ts(day, hhmm):
+    from datetime import datetime
+    d = datetime.strptime(f"{day} {hhmm}", "%Y-%m-%d %H:%M").replace(tzinfo=logic.tzinfo("Europe/Kyiv"))
+    return int(d.timestamp())
+
+
 def ex(tool, **args):
     return actions.execute(1, tool, args)
 
@@ -43,10 +49,11 @@ def test_energy_and_meal():
     assert ex("log_meal", name="борщ")["ok"] and ex("log_meal")["ok"]
 
 
-def test_plan_items_show_up_in_plan_and_context():
+def test_plan_items_show_up_in_plan_and_context(monkeypatch):
+    monkeypatch.setattr("time.time", lambda: _ts("2026-11-12", "10:00"))
     c = handlers.Ctx(1)
-    db.add_event(1, c.ts - 3 * 3600, c.day, "wake")
-    r = ex("add_plan_item", time="23:50", text="Прогулянка <з> собакою")
+    db.add_event(1, c.ts - 2 * 3600, c.day, "wake")
+    r = ex("add_plan_item", time="17:00", text="Прогулянка <з> собакою")
     assert r["ok"]
     assert not ex("add_plan_item", time="25:00", text="x")["ok"]
     assert "#%d" % r["item_id"] in handlers.day_context(handlers.Ctx(1))

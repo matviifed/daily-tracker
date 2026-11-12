@@ -584,6 +584,25 @@ async def set_review_time(m: Message, command: CommandObject):
     await m.answer(f"Вечірній огляд о {t}")
 
 
+# ---------------- нагадування про власні пункти ----------------
+@router.callback_query(F.data.startswith("pi:"))
+async def plan_item_cb(cb: CallbackQuery):
+    c = Ctx(cb.from_user.id)
+    _, action, iid = cb.data.split(":")
+    item = db.plan_item(c.uid, int(iid))
+    if action == "ok" or not item:
+        await cb.message.edit_reply_markup(reply_markup=None)
+        return await cb.answer("Ок" if item else "Пункт уже видалено")
+    later = c.now + timedelta(minutes=15)
+    if later.strftime("%Y-%m-%d") != c.day:
+        await cb.message.edit_reply_markup(reply_markup=None)
+        return await cb.answer("Вже пізно, на сьогодні не переношу")
+    new = logic.hm(later)
+    db.set_plan_item_time(c.uid, item["id"], new)
+    await cb.message.edit_text(f"⏰ Нагадаю о {new}: {item['text']}")
+    await cb.answer("Перенесено")
+
+
 # ---------------- чат із Gemini ----------------
 CHAT_KB = InlineKeyboardMarkup(inline_keyboard=[[B(text="🚪 Вийти з чату", callback_data="chat:end")]])
 

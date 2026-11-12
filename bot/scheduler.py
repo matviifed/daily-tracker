@@ -16,6 +16,7 @@ log = logging.getLogger("scheduler")
 ENERGY_EVERY = 3 * 3600   # не частіше ніж раз на 3 години
 MEAL_GAP = 5 * 3600       # нагадати про їжу, якщо не їв 5 год
 MEAL_EVERY = 2 * 3600
+PLAN_ITEM_WINDOW = 3 * 3600  # власний пункт старший за 3 год уже не нагадуємо
 
 
 def last_ping(uid: int, kind: str) -> int:
@@ -35,6 +36,14 @@ def decide(u, now: int) -> tuple[str, dict] | None:
 
     if db.running_focus(uid):
         return None
+
+    # Власні пункти розпорядку: користувач сам їх попросив, тому тихий режим і «не зараз» їх не глушать
+    for it in db.plan_items(uid, day):
+        t = logic.at(loc, it["hhmm"])
+        if t <= loc and not db.was_sent(uid, f"pi:{it['id']}"):
+            if (loc - t).total_seconds() <= PLAN_ITEM_WINDOW:
+                return "plan_item", {"id": it["id"], "text": it["text"], "hhmm": it["hhmm"]}
+            db.mark_sent(uid, f"pi:{it['id']}")  # застаріле
 
     wake = db.last_event(uid, "wake", day)
     review_due = (loc >= logic.at(loc, u["review_time"]) and wake is not None
@@ -91,6 +100,13 @@ async def tick(bot: Bot, now: int | None = None):
                 await bot.send_message(uid, "🌙 Час підбити підсумки дня?", reply_markup=InlineKeyboardMarkup(
                     inline_keyboard=[[B(text="Почати (1–2 хв)", callback_data="rv:start"),
                                       B(text="Не сьогодні", callback_data="rv:skip")]]))
+            elif kind == "plan_item":
+                db.mark_sent(uid, f"pi:{info['id']}")
+                await bot.send_message(
+                    uid, f"📌 Нагадування ({info['hhmm']}): {info['text']}",
+                    reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                        B(text="✅ Ок", callback_data=f"pi:ok:{info['id']}"),
+                        B(text="⏰ +15 хв", callback_data=f"pi:snz:{info['id']}")]]))
             elif kind == "wakeping":
                 db.mark_sent(uid, f"wakeping:{info['day']}")
                 await bot.send_message(uid, "Доброго дня! Не бачу відмітки про пробудження. Якщо вже на ногах — "

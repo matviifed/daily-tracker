@@ -17,10 +17,12 @@ _STR = "string"
 _INT = "integer"
 
 TOOLS = [{"functionDeclarations": [
-    {"name": "add_task", "description": "Додати задачу в список користувача.",
+    {"name": "add_task", "description": "Додати задачу в список користувача. Якщо вказано time — бот "
+                                        "додатково нагадає про неї сьогодні в цей час.",
      "parameters": {"type": "object", "properties": {
          "text": {"type": _STR, "description": "Текст задачі"},
-         "top": {"type": "boolean", "description": "true, якщо це головна задача дня"}},
+         "top": {"type": "boolean", "description": "true, якщо це головна задача дня"},
+         "time": {"type": _STR, "description": "HH:MM, коли нагадати сьогодні (необов'язково, лише майбутній час)"}},
          "required": ["text"]}},
     {"name": "complete_task", "description": "Відмітити задачу виконаною за її id з контексту.",
      "parameters": {"type": "object", "properties": {"task_id": {"type": _INT}}, "required": ["task_id"]}},
@@ -40,7 +42,8 @@ TOOLS = [{"functionDeclarations": [
      "parameters": {"type": "object", "properties": {"name": {"type": _STR, "description": "Що з'їв (необов'язково)"}}}},
     {"name": "set_wake_time", "description": "Виправити сьогоднішній час пробудження (не пізніше за поточний час).",
      "parameters": {"type": "object", "properties": {"time": {"type": _STR, "description": "HH:MM"}}, "required": ["time"]}},
-    {"name": "add_plan_item", "description": "Додати власний пункт у розпорядок СЬОГОДНІ на вказаний час.",
+    {"name": "add_plan_item", "description": "Додати власний пункт у розпорядок СЬОГОДНІ на вказаний майбутній час; "
+                                              "бот надішле нагадування в цей час.",
      "parameters": {"type": "object", "properties": {
          "time": {"type": _STR, "description": "HH:MM"}, "text": {"type": _STR, "description": "Що робити"}},
          "required": ["time", "text"]}},
@@ -95,11 +98,29 @@ def _hhmm(a: dict, key: str) -> str:
 
 
 # ---------- реалізації ----------
+def _future_time(a: dict, key: str, now) -> str:
+    """HH:MM, яке ще не минуло сьогодні (нагадування можна ставити лише наперед)."""
+    hhmm = _hhmm(a, key)
+    if logic.at(now, hhmm) < now:
+        raise ValueError(f"Час {hhmm} сьогодні вже минув; нагадування ставлю лише на сьогодні наперед")
+    return hhmm
+
+
+def _new_plan_item(uid, day, hhmm, text) -> int:
+    if len(db.plan_items(uid, day)) >= MAX_PLAN_ITEMS_PER_DAY:
+        raise ValueError("Забагато власних пунктів на сьогодні")
+    return db.add_plan_item(uid, day, hhmm, text)
+
+
 def add_task(uid, a, u, ts, now, day):
     text = _text(a, "text", 200)
     top = bool(a.get("top"))
+    hhmm = _future_time(a, "time", now) if a.get("time") else None
+    if hhmm:  # спершу перевіряємо час, щоб не лишити задачу без нагадування
+        _new_plan_item(uid, day, hhmm, text)
     tid = db.add_task(uid, text, day, top=top)
-    return {"ok": True, "task_id": tid, "summary": f"Додано {'головну ' if top else ''}задачу: {text}"}
+    extra = f" (нагадаю о {hhmm})" if hhmm else ""
+    return {"ok": True, "task_id": tid, "summary": f"Додано {'головну ' if top else ''}задачу: {text}{extra}"}
 
 
 def _own_task(uid, a):
@@ -163,12 +184,10 @@ def set_wake_time(uid, a, u, ts, now, day):
 
 
 def add_plan_item(uid, a, u, ts, now, day):
-    hhmm = _hhmm(a, "time")
+    hhmm = _future_time(a, "time", now)
     text = _text(a, "text", 120)
-    if len(db.plan_items(uid, day)) >= MAX_PLAN_ITEMS_PER_DAY:
-        raise ValueError("Забагато власних пунктів на сьогодні")
-    iid = db.add_plan_item(uid, day, hhmm, text)
-    return {"ok": True, "item_id": iid, "summary": f"У розпорядок додано: {hhmm} — {text}"}
+    iid = _new_plan_item(uid, day, hhmm, text)
+    return {"ok": True, "item_id": iid, "summary": f"У розпорядок додано: {hhmm} — {text} (нагадаю)"}
 
 
 def remove_plan_item(uid, a, u, ts, now, day):

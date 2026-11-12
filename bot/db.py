@@ -327,6 +327,11 @@ def plan_item(uid, item_id):
     return one("SELECT * FROM plan_items WHERE id=? AND user_id=?", (item_id, uid))
 
 
+def set_plan_item_time(uid, item_id, hhmm):
+    run("UPDATE plan_items SET hhmm=? WHERE id=? AND user_id=?", (hhmm, item_id, uid))
+    run("DELETE FROM sent WHERE user_id=? AND key=?", (uid, f"pi:{item_id}"))  # знову нагадати
+
+
 def delete_plan_item(uid, item_id):
     run("DELETE FROM plan_items WHERE id=? AND user_id=?", (item_id, uid))
 
