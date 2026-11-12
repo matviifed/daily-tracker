@@ -1,34 +1,7 @@
 # Daily Tracker — Telegram-бот «Операційна система дня»
 
 Допомагає прокинутись без тертя, тримати енергію, робити важливе, не забувати про їжу/воду/рух і підбивати підсумки ввечері.
-Реалізовано Рівні 1–2 зі специфікації.
-
-## Запуск
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate        # Windows
-pip install -r requirements.txt
-copy .env.example .env        # впиши BOT_TOKEN від @BotFather
-python main.py
-```
-
-Тести: `python -m pytest`
-
-## Розгортання на VPS (Ubuntu, напр. Oracle Cloud Always Free)
-
-Бот працює через long polling, тож вхідні порти відкривати не треба.
-
-```bash
-git clone https://github.com/matviifed/daily-tracker.git
-cd daily-tracker
-bash deploy/setup.sh        # перший запуск створить .env
-nano .env                   # впиши BOT_TOKEN
-bash deploy/setup.sh        # встановить і запустить systemd-службу
-```
-
-Логи: `journalctl -u daily-tracker -f`. Оновлення: `git pull && sudo systemctl restart daily-tracker`.
-Той самий токен можна використовувати лише в одному місці одночасно — зупини локальний запуск перед стартом на сервері.
+Реалізовано Рівні 1–2 зі специфікації + чат із Gemini.
 
 ## Що вміє
 
@@ -39,22 +12,48 @@ bash deploy/setup.sh        # встановить і запустить systemd
 | Енергія | 🟢🟡🔴 кнопками; бот сам питає раз на ~3 год (10:00–20:00), радить дії, підказує їжу/воду |
 | Фокус | `/focus 90` або режими Deep/Light/Creative; під час сесії бот мовчить; після — «Зробив?» і перерва |
 | Звички | вода, рух, читання — кнопки, прогрес-рядок, скасування останнього |
-| Їжа | 3 варіанти за часом доби, доступним часом (10/20/60 хв), режимом (швидко/з того що є/корисно/смачно), без повторів за останні дні |
+| Їжа | 3 варіанти за часом доби, доступним часом (10/20/60 хв), режимом, без повторів |
 | Задачі | будь-який текст = задача; `/top` — головна; невиконані переносяться |
 | Вечірній огляд | о 21:30 (`/reviewtime`) або `/review`: що вийшло / що ні / пріоритет / підготовка / настрій → чернетка завтра |
 | Статистика | піки енергії, фокус-години, середнє пробудження, серія води, настрій |
-| Чат із ШІ | «💬 Чат» або `/chat` — вільна розмова з Google Gemini, що знає твій день; `/ask питання` — разово; `/endchat` — вийти. Потрібен `GEMINI_API_KEY` (безкоштовно в Google AI Studio). Повідомлення й контекст дня надсилаються в Google |
+| Чат із ШІ | «💬 Чат» або `/chat` — розмова з Google Gemini, що знає твій день; `/ask питання`; `/endchat`. Потрібен `GEMINI_API_KEY`. Повідомлення й контекст дня надсилаються в Google. Чат лише відповідає, задач сам не додає |
 | Не нав'язливість | «Не зараз (1 год)», «До завтра», `/quiet on` |
 
-## Налаштування (.env)
+## Розгортання на Vercel (безкоштовно)
 
-`BOT_TOKEN`, `DEFAULT_TZ` (Europe/Kyiv), `DB_PATH`, `ALLOWED_USERS` (ID через кому — обмежити доступ лише собою; свій ID дізнаєшся в @userinfobot).
+Бот працює через вебхук (Vercel) + базу Turso. Нагадування (енергія, їжа, кінець фокусу, вечірній огляд) спрацьовують, коли зовнішній пінгер раз на хвилину викликає `/api/tick`.
+
+1. **Turso** (turso.tech, безкоштовний тариф): створи базу → скопіюй URL (`libsql://…`) і створи токен доступу.
+2. **Vercel**: Add New → Project → імпортуй цей репозиторій. Додай змінні середовища (Settings → Environment Variables):
+   `BOT_TOKEN`, `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `WEBHOOK_SECRET`, `CRON_SECRET`, `DEFAULT_TZ`, `ALLOWED_USERS` (твій Telegram ID), за бажанням `GEMINI_API_KEY`, `GEMINI_MODEL`. Задеплой.
+3. **Вебхук** (локально, з `BOT_TOKEN` і `WEBHOOK_SECRET` у `.env`):
+   ```
+   python set_webhook.py https://твій-проєкт.vercel.app
+   ```
+4. **Пінгер** (cron-job.org, безкоштовно): створи завдання кожну 1 хвилину на
+   `https://твій-проєкт.vercel.app/api/tick?key=ТВІЙ_CRON_SECRET`.
+   (Vercel Cron на безкоштовному тарифі — лише раз на добу, тому потрібен зовнішній пінгер.)
+
+Повернутись до polling: `python set_webhook.py --delete`, потім `python main.py`.
+
+## Локальний запуск (polling)
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -r requirements-dev.txt
+copy .env.example .env        # впиши BOT_TOKEN
+python main.py
+```
+
+Без `TURSO_DATABASE_URL` дані зберігаються локально у `data/tracker.db`. Тести: `python -m pytest`.
 
 ## Структура
 
+- `api/index.py` — вебхук і тік для Vercel (FastAPI)
 - `bot/logic.py` — чиста логіка (план, їжа, енергія, статистика)
-- `bot/db.py` — SQLite
-- `bot/handlers.py` — кнопки й команди
-- `bot/scheduler.py` — таймер фокусу та м'які нагадування (`decide()` — тестована функція рішень)
-
-Дані зберігаються локально у `data/tracker.db`. Рівень 3 (календар, Todoist, голос) — наступні кроки.
+- `bot/db.py` — SQLite локально / Turso через HTTP
+- `bot/storage.py` — збереження стану діалогів у БД
+- `bot/handlers.py` — кнопки й команди; `bot/llm.py` — Gemini
+- `bot/scheduler.py` — таймер фокусу та м'які нагадування (`decide()` — тестована функція)
+- `main.py` — локальний polling; `set_webhook.py` — реєстрація вебхука

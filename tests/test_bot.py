@@ -9,8 +9,7 @@ TZ = "Europe/Kyiv"
 
 
 @pytest.fixture(autouse=True)
-def fresh_db():
-    db.init(":memory:")
+def fresh_db(db_backend):
     db.ensure_user(1, TZ)
 
 

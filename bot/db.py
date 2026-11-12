@@ -59,39 +59,121 @@ CREATE TABLE IF NOT EXISTS chat(
   day TEXT NOT NULL DEFAULT '',
   used INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS fsm(
+  k TEXT PRIMARY KEY,
+  state TEXT,
+  data TEXT NOT NULL DEFAULT '{}'
+);
 """
 
-_conn: sqlite3.Connection | None = None
+class _Local:
+    """Локальний SQLite (розробка, тести, polling-режим)."""
+
+    def __init__(self, path: str):
+        if path != ":memory:":
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(path, check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript(SCHEMA)
+        self.conn.commit()
+
+    def execute(self, sql: str, args=()):
+        cur = self.conn.execute(sql, args)
+        self.conn.commit()
+        return [dict(r) for r in cur.fetchall()], cur.lastrowid
 
 
-def init(path: str) -> sqlite3.Connection:
-    global _conn
-    if path != ":memory:":
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-    _conn = sqlite3.connect(path, check_same_thread=False)
-    _conn.row_factory = sqlite3.Row
-    _conn.executescript(SCHEMA)
-    _conn.commit()
-    return _conn
+class _Turso:
+    """Turso (libSQL) через HTTP-API (Hrana over HTTP). Без нативних залежностей — підходить для Vercel."""
+
+    def __init__(self, url: str, token: str, client=None):
+        import httpx
+        self.url = url.replace("libsql://", "https://").rstrip("/") + "/v2/pipeline"
+        self.client = client or httpx.Client(timeout=8.0)
+        self.headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        self._pipeline([self._stmt(s.strip(), ()) for s in SCHEMA.split(";") if s.strip()])
+
+    @staticmethod
+    def _arg(v):
+        if v is None:
+            return {"type": "null"}
+        if isinstance(v, bool):
+            return {"type": "integer", "value": str(int(v))}
+        if isinstance(v, int):
+            return {"type": "integer", "value": str(v)}
+        if isinstance(v, float):
+            return {"type": "float", "value": v}
+        return {"type": "text", "value": str(v)}
+
+    @staticmethod
+    def _val(cell):
+        t, v = cell.get("type"), cell.get("value")
+        if t == "null":
+            return None
+        if t == "integer":
+            return int(v)
+        if t == "float":
+            return float(v)
+        return v
+
+    def _stmt(self, sql, args):
+        return {"type": "execute", "stmt": {"sql": sql, "args": [self._arg(a) for a in args]}}
+
+    def _pipeline(self, stmts):
+        body = {"requests": [*stmts, {"type": "close"}]}
+        r = self.client.post(self.url, json=body, headers=self.headers)
+        r.raise_for_status()
+        results = r.json()["results"]
+        for res in results:
+            if res.get("type") == "error":
+                raise RuntimeError(res["error"].get("message", "Turso error"))
+        return results
+
+    def execute(self, sql: str, args=()):
+        res = self._pipeline([self._stmt(sql, args)])[0]["response"]["result"]
+        cols = [col["name"] for col in res.get("cols", [])]
+        rows = [{n: self._val(cell) for n, cell in zip(cols, row)} for row in res.get("rows", [])]
+        last = res.get("last_insert_rowid")
+        return rows, int(last) if last is not None else None
 
 
-def c() -> sqlite3.Connection:
-    assert _conn is not None, "db.init() не викликано"
-    return _conn
+_backend = None
 
 
-def q(sql: str, args=()) -> list[sqlite3.Row]:
-    return c().execute(sql, args).fetchall()
+def init(path: str = ":memory:", turso_url: str | None = None, turso_token: str | None = None, client=None):
+    global _backend
+    _backend = _Turso(turso_url, turso_token or "", client) if turso_url else _Local(path)
+    return _backend
+
+
+def init_from_env():
+    from . import config
+    return init(config.DB_PATH, config.TURSO_URL or None, config.TURSO_TOKEN or None)
+
+
+def q(sql: str, args=()) -> list[dict]:
+    assert _backend is not None, "db.init() не викликано"
+    return _backend.execute(sql, args)[0]
 
 
 def one(sql: str, args=()):
-    return c().execute(sql, args).fetchone()
+    rows = q(sql, args)
+    return rows[0] if rows else None
 
 
 def run(sql: str, args=()) -> int:
-    cur = c().execute(sql, args)
-    c().commit()
-    return cur.lastrowid
+    assert _backend is not None, "db.init() не викликано"
+    return _backend.execute(sql, args)[1]
+
+
+# ---------- FSM (стан діалогу має переживати між викликами serverless) ----------
+def fsm_get(key: str):
+    return one("SELECT state, data FROM fsm WHERE k=?", (key,))
+
+
+def fsm_set(key: str, state: str | None, data: str):
+    run("INSERT INTO fsm(k,state,data) VALUES(?,?,?) "
+        "ON CONFLICT(k) DO UPDATE SET state=excluded.state, data=excluded.data", (key, state, data))
 
 
 # ---------- users ----------

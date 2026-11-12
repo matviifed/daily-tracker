@@ -127,8 +127,7 @@ async def wake(m: Message, command: CommandObject | None = None):
         if not t or t > c.now:
             return await m.answer("Не розумію час. Напиши, наприклад: /wake 8:10 (не пізніше за поточний).")
         ts = int(t.timestamp())
-        db.c().execute("DELETE FROM events WHERE user_id=? AND day=? AND kind='wake'", (c.uid, c.day))
-        db.c().commit()
+        db.run("DELETE FROM events WHERE user_id=? AND day=? AND kind='wake'", (c.uid, c.day))
     elif wake_event(c):
         w = logic.local(wake_event(c)["ts"], c.tz)
         age = (c.now - w).total_seconds() / 60

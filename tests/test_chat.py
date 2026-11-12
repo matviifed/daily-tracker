@@ -6,9 +6,6 @@ import pytest
 from bot import config, db, handlers, llm
 
 
-@pytest.fixture(autouse=True)
-def fresh_db():
-    db.init(":memory:")
 
 
 def test_payload_shape_and_history_trim():

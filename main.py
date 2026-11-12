@@ -11,7 +11,7 @@ async def main():
     logging.basicConfig(level=logging.INFO)
     if not config.BOT_TOKEN:
         raise SystemExit("Встанови BOT_TOKEN у файлі .env (див. .env.example)")
-    db.init(config.DB_PATH)
+    db.init_from_env()
     bot = Bot(config.BOT_TOKEN)
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(handlers.router)
