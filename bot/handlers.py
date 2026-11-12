@@ -14,7 +14,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (CallbackQuery, InlineKeyboardButton as B, InlineKeyboardMarkup,
                            KeyboardButton, Message, ReplyKeyboardMarkup)
 
-from . import config, db, llm, logic
+from . import actions, config, db, llm, logic
 
 router = Router()
 esc = html.escape
@@ -106,9 +106,14 @@ def plan_text(c: Ctx) -> str:
         return "Я ще не знаю, коли ти прокинувся. Натисни «☀️ Прокинувся»."
     wake = logic.local(w["ts"], c.tz)
     en = db.last_event(c.uid, "energy", c.day)
-    tasks = [t["text"] for t in db.open_tasks(c.uid, c.day)][:3]
+    tasks = [esc(t["text"]) for t in db.open_tasks(c.uid, c.day)][:3]
     had_meal = db.last_event(c.uid, "meal", c.day) is not None
     items = logic.build_plan(c.now, wake, en["value"] if en else None, tasks, had_meal, c.user["review_time"])
+    for it in db.plan_items(c.uid, c.day):  # власні пункти розпорядку (їх додає й Gemini)
+        d = logic.at(c.now, it["hhmm"])
+        if d >= c.now - timedelta(minutes=30):
+            items.append((d, f"📌 {esc(it['text'])}"))
+    items.sort(key=lambda x: x[0])
     head = f"📋 <b>План на сьогодні</b>"
     if en and en["value"] == "low":
         head += "  (полегшений: енергія низька)"
@@ -593,9 +598,18 @@ def day_context(c: Ctx) -> str:
     lm = db.last_event(c.uid, "meal", c.day)
     lines.append(f"Остання їжа: {logic.hm(logic.local(lm['ts'], c.tz))}" if lm else "Сьогодні їжу ще не відмічено")
     lines.append("Звички: " + logic.habit_line(*habit_numbers(c)))
-    tasks_ = db.open_tasks(c.uid, c.day)[:7]
+    tasks_ = db.open_tasks(c.uid, c.day)[:15]
     if tasks_:
-        lines.append("Відкриті задачі: " + "; ".join(("[головна] " if t["top"] else "") + t["text"] for t in tasks_))
+        lines.append("Відкриті задачі (id, текст): " + "; ".join(
+            f"#{t['id']} " + ("[головна] " if t["top"] else "") + t["text"] for t in tasks_))
+    custom = db.plan_items(c.uid, c.day)
+    if custom:
+        lines.append("Власні пункти розпорядку на сьогодні (id, час, текст): " + "; ".join(
+            f"#{i['id']} {i['hhmm']} {i['text']}" for i in custom))
+    running = db.running_focus(c.uid)
+    if running:
+        lines.append(f"Зараз іде фокус до {logic.hm(logic.local(running['end_ts'], c.tz))}")
+    lines.append(f"Вечірній огляд о {c.user['review_time']}; тихий режим: {'так' if c.user['quiet'] else 'ні'}")
     start_ts, end_ts = logic.day_bounds(c.day, c.tz)
     f = [x for x in db.focus_between(c.uid, start_ts, end_ts) if x["status"] == "finished"]
     if f:
@@ -612,11 +626,14 @@ async def chat_reply(m: Message, text: str):
     history = json.loads(st["history"]) if st["history"] else []
     await m.bot.send_chat_action(m.chat.id, "typing")
     try:
-        answer = await llm.ask(history, text, day_context(c))
+        answer, done = await llm.ask(history, text, day_context(c),
+                                     executor=lambda name, args: actions.execute(c.uid, name, args))
     except llm.LLMError as e:
         return await m.answer(str(e))
     history += [{"role": "user", "text": text}, {"role": "model", "text": answer}]
     db.chat_set(c.uid, history=json.dumps(history[-12:], ensure_ascii=False), day=c.day, used=used + 1)
+    if done:
+        answer += "\n\n✅ Змінено:\n" + "\n".join(f"• {s}" for s in done)
     await m.answer(answer, reply_markup=CHAT_KB if st["active"] else None)
 
 
@@ -627,6 +644,8 @@ async def chat_start(m: Message):
     db.chat_set(c.uid, active=1, history="[]")
     await m.answer(
         "💬 Режим чату увімкнено — пиши вільним текстом, я знаю твій день (план, енергію, задачі).\n"
+        "Можу й змінювати розпорядок: «додай задачу…», «познач воду», «додай у план прогулянку на 17:00»,"
+        "«запусти фокус 45 хв». Усі зміни покажу списком.\n"
         "Кнопки меню працюють як завжди.\n\n"
         "⚠️ Повідомлення й короткий контекст дня надсилаються в Google Gemini (безкоштовний тариф "
         "може використовувати їх для покращення моделей). Не пиши паролі й чутливі дані.",

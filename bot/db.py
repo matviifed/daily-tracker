@@ -59,6 +59,13 @@ CREATE TABLE IF NOT EXISTS chat(
   day TEXT NOT NULL DEFAULT '',
   used INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS plan_items(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  day TEXT NOT NULL,
+  hhmm TEXT NOT NULL,
+  text TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS fsm(
   k TEXT PRIMARY KEY,
   state TEXT,
@@ -305,3 +312,24 @@ def chat_set(uid, **kw):
     chat_get(uid)
     cols = ",".join(f"{k}=?" for k in kw)
     run(f"UPDATE chat SET {cols} WHERE user_id=?", (*kw.values(), uid))
+
+
+# ---------- власні пункти розпорядку дня ----------
+def add_plan_item(uid, day, hhmm, text):
+    return run("INSERT INTO plan_items(user_id,day,hhmm,text) VALUES(?,?,?,?)", (uid, day, hhmm, text))
+
+
+def plan_items(uid, day):
+    return q("SELECT * FROM plan_items WHERE user_id=? AND day=? ORDER BY hhmm, id", (uid, day))
+
+
+def plan_item(uid, item_id):
+    return one("SELECT * FROM plan_items WHERE id=? AND user_id=?", (item_id, uid))
+
+
+def delete_plan_item(uid, item_id):
+    run("DELETE FROM plan_items WHERE id=? AND user_id=?", (item_id, uid))
+
+
+def task(uid, task_id):
+    return one("SELECT * FROM tasks WHERE id=? AND user_id=?", (task_id, uid))

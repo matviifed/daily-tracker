@@ -28,7 +28,7 @@ def test_parse_response():
 def test_ask_without_key(monkeypatch):
     monkeypatch.setattr(config, "GEMINI_API_KEY", "")
     with pytest.raises(llm.LLMError):
-        asyncio.run(llm.ask([], "hi", ""))
+        asyncio.run(llm.ask([], "hi", "", executor=lambda n, a: {}))
 
 
 def test_chat_state_roundtrip():
