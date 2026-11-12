@@ -15,6 +15,21 @@ python main.py
 
 Тести: `python -m pytest`
 
+## Розгортання на VPS (Ubuntu, напр. Oracle Cloud Always Free)
+
+Бот працює через long polling, тож вхідні порти відкривати не треба.
+
+```bash
+git clone https://github.com/matviifed/daily-tracker.git
+cd daily-tracker
+bash deploy/setup.sh        # перший запуск створить .env
+nano .env                   # впиши BOT_TOKEN
+bash deploy/setup.sh        # встановить і запустить systemd-службу
+```
+
+Логи: `journalctl -u daily-tracker -f`. Оновлення: `git pull && sudo systemctl restart daily-tracker`.
+Той самий токен можна використовувати лише в одному місці одночасно — зупини локальний запуск перед стартом на сервері.
+
 ## Що вміє
 
 | Модуль | Як працює |
